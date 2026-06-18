@@ -6,24 +6,31 @@ use image::{DynamicImage, GenericImageView, ImageBuffer, Luma};
 use ndarray::{s, Array, Array4};
 use ort::session::Session;
 
+const DEFAULT_DET_MODEL: &[u8] = include_bytes!("../models/PP-OCRv6_tiny_det_onnx_infer/inference.onnx");
+const DEFAULT_REC_MODEL: &[u8] = include_bytes!("../models/PP-OCRv6_tiny_rec_onnx_infer/inference.onnx");
+const DEFAULT_DICT: &str = include_str!("../models/dict.txt");
+
 #[derive(Parser, Debug)]
-#[command(author, version, about = "PaddleOCR Rust Inference Tool (Offline)")]
+#[command(author, version, about = "PaddleOCR Standalone Rust Inference CLI Tool")]
 struct Args {
-    /// 输入要识别的测试图像路径
-    #[arg(short, long)]
+    /// 输入要进行识别的测试图像路径 (位置参数)
     image: PathBuf,
 
-    /// 文本检测检测模型 (inference.onnx) 路径
-    #[arg(short, long, default_value = "models/PP-OCRv6_tiny_det_onnx_infer/inference.onnx")]
-    det_model: PathBuf,
+    /// 文本检测模型 (inference.onnx) 路径 [可选，缺省则使用内嵌模型]
+    #[arg(short, long)]
+    det_model: Option<PathBuf>,
 
-    /// 文本识别模型 (inference.onnx) 路径
-    #[arg(short, long, default_value = "models/PP-OCRv6_tiny_rec_onnx_infer/inference.onnx")]
-    rec_model: PathBuf,
+    /// 文本识别模型 (inference.onnx) 路径 [可选，缺省则使用内嵌模型]
+    #[arg(short, long)]
+    rec_model: Option<PathBuf>,
 
-    /// 中文字典密钥文本路径
-    #[arg(short, long, default_value = "models/dict.txt")]
-    dict: PathBuf,
+    /// 中文字典文本路径 [可选，缺省则使用内嵌中文字典]
+    #[arg(short, long)]
+    dict: Option<PathBuf>,
+
+    /// 是否输出详细性能耗时分析与步骤辅助信息
+    #[arg(short, long)]
+    info: bool,
 }
 
 fn resolve_path(path: PathBuf) -> PathBuf {
@@ -59,41 +66,71 @@ fn resolve_path(path: PathBuf) -> PathBuf {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let show_info = args.info;
 
-    let det_model_path = resolve_path(args.det_model);
-    let rec_model_path = resolve_path(args.rec_model);
-    let dict_path = resolve_path(args.dict);
+    let start_total = std::time::Instant::now();
 
     // 1. 初始化 ONNX Runtime 环境并载入模型
-    println!("🔔 正在载入文本检测模型: {:?}", det_model_path);
-    let mut det_session = Session::builder()?
-        .with_intra_threads(4)?
-        .commit_from_file(&det_model_path)?;
+    let start_load = std::time::Instant::now();
+    let mut det_session = if let Some(ref path) = args.det_model {
+        let resolved = resolve_path(path.clone());
+        if show_info {
+            println!("🔔 正在载入外部文本检测模型: {:?}", resolved);
+        }
+        Session::builder()?
+            .with_intra_threads(4)?
+            .commit_from_file(&resolved)?
+    } else {
+        if show_info {
+            println!("🔔 正在载入内嵌默认文本检测模型 (PP-OCRv6 tiny)");
+        }
+        Session::builder()?
+            .with_intra_threads(4)?
+            .commit_from_memory(DEFAULT_DET_MODEL)?
+    };
 
-    println!("🔔 正在载入文本识别模型: {:?}", rec_model_path);
-    let mut rec_session = Session::builder()?
-        .with_intra_threads(4)?
-        .commit_from_file(&rec_model_path)?;
+    let mut rec_session = if let Some(ref path) = args.rec_model {
+        let resolved = resolve_path(path.clone());
+        if show_info {
+            println!("🔔 正在载入外部文本识别模型: {:?}", resolved);
+        }
+        Session::builder()?
+            .with_intra_threads(4)?
+            .commit_from_file(&resolved)?
+    } else {
+        if show_info {
+            println!("🔔 正在载入内嵌默认文本识别模型 (PP-OCRv6 tiny)");
+        }
+        Session::builder()?
+            .with_intra_threads(4)?
+            .commit_from_memory(DEFAULT_REC_MODEL)?
+    };
+    let load_duration = start_load.elapsed();
 
-    // 2. 加载图片
-    println!("📸 正在读取图片: {:?}", args.image);
+    // 2. 加载图片与预处理
+    let start_preprocess = std::time::Instant::now();
+    if show_info {
+        println!("📸 正在读取图片: {:?}", args.image);
+    }
     let img = image::open(&args.image)?;
     let (orig_w, orig_h) = img.dimensions();
 
-    // 3. 检测模型图像预处理 (缩放到 32 的整数倍，这里假定 736x736 进行测试)
+    // 3. 检测模型图像预处理
     let det_size = 736;
     let (det_input, ratio_w, ratio_h) = preprocess_det(&img, det_size);
+    let preprocess_duration = start_preprocess.elapsed();
 
     // 4. 执行文本检测推理 (DBNet)
+    let start_det = std::time::Instant::now();
     let det_input_value = ort::value::Value::from_array(det_input.clone())?;
     let det_outputs = det_session.run(ort::inputs![det_input_value])?;
     let det_output_tensor = det_outputs[0].try_extract_array::<f32>()?;
-    
-    // 获取概率图 shape: [1, 1, H, W]
     let prob_map = det_output_tensor.slice(s![0, 0, .., ..]);
 
     // 5. 检测后处理：二值化并提取文本区域轮廓
-    println!("🔍 正在提取文本区域...");
+    if show_info {
+        println!("🔍 正在提取文本区域...");
+    }
     let mut binary_img: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::new(det_size, det_size);
     for y in 0..det_size {
         for x in 0..det_size {
@@ -103,67 +140,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 利用 imageproc 寻找轮廓
     let contours = imageproc::contours::find_contours(&binary_img);
     let mut boxes = Vec::new();
 
     for contour in contours {
-        // 过滤较小的噪点区域
         if contour.points.len() < 4 {
             continue;
         }
-
-        // 计算包围盒
         let mut min_x = det_size;
         let mut max_x = 0;
         let mut min_y = det_size;
         let mut max_y = 0;
-
         for pt in &contour.points {
             if pt.x < min_x { min_x = pt.x; }
             if pt.x > max_x { max_x = pt.x; }
             if pt.y < min_y { min_y = pt.y; }
             if pt.y > max_y { max_y = pt.y; }
         }
-
         let w = max_x - min_x;
         let h = max_y - min_y;
-
-        // 过滤掉面积过小的框
         if w * h < 64 {
             continue;
         }
-
-        // 还原回原图坐标尺寸
         let orig_min_x = (min_x as f32 / ratio_w) as u32;
         let orig_max_x = (max_x as f32 / ratio_w) as u32;
         let orig_min_y = (min_y as f32 / ratio_h) as u32;
         let orig_max_y = (max_y as f32 / ratio_h) as u32;
-
         boxes.push((orig_min_x, orig_min_y, orig_max_x - orig_min_x, orig_max_y - orig_min_y));
     }
+    let det_duration = start_det.elapsed();
 
-    println!("🎯 检测到 {} 个文本区域，开始执行识别...", boxes.len());
+    if show_info {
+        println!("🎯 检测到 {} 个文本区域，开始执行识别...", boxes.len());
+    }
 
     // 6. 加载字典
-    let dict = load_dict(&dict_path)?;
+    let dict = if let Some(ref path) = args.dict {
+        let resolved = resolve_path(path.clone());
+        if show_info {
+            println!("🔔 正在载入外部字典: {:?}", resolved);
+        }
+        load_dict(&resolved)?
+    } else {
+        if show_info {
+            println!("🔔 正在载入内嵌默认中文字典");
+        }
+        DEFAULT_DICT.lines().map(|line| line.to_string()).collect()
+    };
 
     // 7. 遍历检测到的边框执行识别推理 (CRNN)
+    let start_rec = std::time::Instant::now();
+    let mut results = Vec::new();
+
     for (i, &(bx, by, bw, bh)) in boxes.iter().enumerate() {
-        // 确保裁剪边界安全
         let crop_x = bx.min(orig_w - 1);
         let crop_y = by.min(orig_h - 1);
         let crop_w = bw.min(orig_w - crop_x);
         let crop_h = bh.min(orig_h - crop_y);
-
         if crop_w == 0 || crop_h == 0 {
             continue;
         }
-
-        // 裁剪出当前文本块图像
         let cropped = img.crop_imm(crop_x, crop_y, crop_w, crop_h);
-        
-        // 识别输入图像预处理 (固定高度为 48, 宽度根据比例自适应)
         let rec_h = 48;
         let rec_w = (crop_w as f32 * (rec_h as f32 / crop_h as f32)) as u32;
         let rec_input = preprocess_rec(&cropped, rec_w, rec_h);
@@ -175,10 +212,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 8. CTC 解码得到识别文本
         let text = decode_ctc(&rec_tensor, &dict);
-        println!("  👉 [框 {}] 坐标:({},{},{},{}) -> 识别结果: \"{}\"", i + 1, bx, by, bw, bh, text);
+        if show_info {
+            println!("  👉 [框 {}] 坐标:({},{},{},{}) -> 识别结果: \"{}\"", i + 1, bx, by, bw, bh, text);
+        }
+        results.push((bx, by, bw, bh, text));
+    }
+    let rec_duration = start_rec.elapsed();
+    let total_duration = start_total.elapsed();
+
+    // 8. 输出结果
+    if show_info {
+        println!("\n⏱️ 详细性能分析与统计 (Verbose Metrics):");
+        println!("  ⚡ 引擎载入与模型初始化: {:?}", load_duration);
+        println!("  ⚡ 图像解码与预处理: {:?}", preprocess_duration);
+        println!("  ⚡ 文本区域检测 (DBNet): {:?}", det_duration);
+        println!("  ⚡ 文本片段识别 (CRNN): {:?}", rec_duration);
+        println!("  ⏱️ 整体推理耗时: {:?}", total_duration);
+        println!("  🎯 提取文本块总计: {} 个", results.len());
+        println!("\n🔍 输出识别结果 (JSON):");
     }
 
-    println!("✨ OCR 任务处理完成！");
+    let mut json_items = Vec::new();
+    for &(bx, by, bw, bh, ref text) in &results {
+        let escaped_text = text.replace('\\', "\\\\").replace('\"', "\\\"");
+        json_items.push(format!(
+            "  {{\n    \"box\": [{}, {}, {}, {}],\n    \"text\": \"{}\"\n  }}",
+            bx, by, bw, bh, escaped_text
+        ));
+    }
+    let json_str = format!("[\n{}\n]", json_items.join(",\n"));
+    println!("{}", json_str);
+
+    if show_info {
+        println!("✨ OCR 任务处理完成！");
+    }
     Ok(())
 }
 
