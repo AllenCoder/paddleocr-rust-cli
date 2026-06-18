@@ -126,12 +126,33 @@ fn get_current_time_string() -> String {
 mod linux_support {
     use std::fs::File;
     use std::io::Write;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     const SO_BYTES: &[u8] = include_bytes!("../libs/libonnxruntime.so");
 
+    // 获取安全的自解压目录，优先选择 $HOME/.ocr-rust/，其次是程序同级目录的 libs/，最后是 /tmp/
+    fn get_extract_dir() -> PathBuf {
+        if let Ok(home) = std::env::var("HOME") {
+            let path = Path::new(&home).join(".ocr-rust");
+            if std::fs::create_dir_all(&path).is_ok() {
+                return path;
+            }
+        }
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(parent) = exe_path.parent() {
+                let path = parent.join("libs");
+                if std::fs::create_dir_all(&path).is_ok() {
+                    return path;
+                }
+                return parent.to_path_buf();
+            }
+        }
+        PathBuf::from("/tmp")
+    }
+
     pub fn extract_and_load_so() -> Result<(), Box<dyn std::error::Error>> {
-        let target_path = Path::new("/tmp/libonnxruntime_1_18_1.so");
+        let extract_dir = get_extract_dir();
+        let target_path = extract_dir.join("libonnxruntime_1_18_1.so");
         
         let needs_extract = if !target_path.exists() {
             true
@@ -143,7 +164,7 @@ mod linux_support {
         };
 
         if needs_extract {
-            let mut file = File::create(target_path)?;
+            let mut file = File::create(&target_path)?;
             file.write_all(SO_BYTES)?;
             file.flush()?;
             
@@ -152,7 +173,7 @@ mod linux_support {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perms = target_path.metadata()?.permissions();
                 perms.set_mode(0o755);
-                std::fs::set_permissions(target_path, perms)?;
+                std::fs::set_permissions(&target_path, perms)?;
             }
         }
         
@@ -165,9 +186,9 @@ mod linux_support {
         Ok(())
     }
 
-    pub fn get_embedded_model_path(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-        use std::path::PathBuf;
-        let target_path = PathBuf::from(format!("/tmp/ocr_model_{}.onnx", name));
+    pub fn get_embedded_model_path(name: &str, bytes: &[u8]) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let extract_dir = get_extract_dir();
+        let target_path = extract_dir.join(format!("ocr_model_{}.onnx", name));
         
         let needs_extract = if !target_path.exists() {
             true
