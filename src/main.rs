@@ -26,19 +26,39 @@ struct Args {
     dict: PathBuf,
 }
 
+fn resolve_path(path: PathBuf) -> PathBuf {
+    if path.exists() {
+        path
+    } else {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let resolved = exe_dir.join(&path);
+                if resolved.exists() {
+                    return resolved;
+                }
+            }
+        }
+        path
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
+    let det_model_path = resolve_path(args.det_model);
+    let rec_model_path = resolve_path(args.rec_model);
+    let dict_path = resolve_path(args.dict);
+
     // 1. 初始化 ONNX Runtime 环境并载入模型
-    println!("🔔 正在载入文本检测模型: {:?}", args.det_model);
+    println!("🔔 正在载入文本检测模型: {:?}", det_model_path);
     let mut det_session = Session::builder()?
         .with_intra_threads(4)?
-        .commit_from_file(&args.det_model)?;
+        .commit_from_file(&det_model_path)?;
 
-    println!("🔔 正在载入文本识别模型: {:?}", args.rec_model);
+    println!("🔔 正在载入文本识别模型: {:?}", rec_model_path);
     let mut rec_session = Session::builder()?
         .with_intra_threads(4)?
-        .commit_from_file(&args.rec_model)?;
+        .commit_from_file(&rec_model_path)?;
 
     // 2. 加载图片
     println!("📸 正在读取图片: {:?}", args.image);
@@ -111,7 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🎯 检测到 {} 个文本区域，开始执行识别...", boxes.len());
 
     // 6. 加载字典
-    let dict = load_dict(&args.dict)?;
+    let dict = load_dict(&dict_path)?;
 
     // 7. 遍历检测到的边框执行识别推理 (CRNN)
     for (i, &(bx, by, bw, bh)) in boxes.iter().enumerate() {
