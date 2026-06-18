@@ -36,6 +36,14 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Linux 专用：安装 musl 工具链，实现 GLIBC-free 静态链接
+      - name: Install musl tools (Linux only)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
@@ -47,8 +55,14 @@ jobs:
         run: |
           cargo build --release
 
-      - name: Build release binary (Non-Windows)
-        if: matrix.os != 'windows-latest'
+      # Linux: 使用 musl target 编译，产物完全静态链接，不依赖任何 GLIBC 版本
+      - name: Build release binary (Linux - musl static)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Build release binary (macOS)
+        if: matrix.os == 'macos-latest'
         run: |
           cargo build --release
 
@@ -63,8 +77,19 @@ jobs:
           cd release-pkg
           tar -a -c -f ../${{ matrix.archive_name }} *
 
-      - name: Prepare Release Artifacts (Non-Windows)
-        if: matrix.os != 'windows-latest'
+      # Linux: 从 musl target 目录拷贝产物
+      - name: Prepare Release Artifacts (Linux - musl static)
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          mkdir -p release-pkg
+          cp target/x86_64-unknown-linux-musl/release/ocr-rust release-pkg/
+          # musl 静态链接无需拷贝 onnxruntime 动态库，模型已内嵌
+          cp README.md release-pkg/
+          tar -czf ${{ matrix.archive_name }} -C release-pkg .
+
+      - name: Prepare Release Artifacts (macOS)
+        if: matrix.os == 'macos-latest'
         shell: bash
         run: |
           mkdir -p release-pkg
