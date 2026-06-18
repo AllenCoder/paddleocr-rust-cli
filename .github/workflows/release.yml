@@ -76,18 +76,23 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           . "$HOME/.cargo/env"
 
-          # 下载官方的 ONNX Runtime 共享库以避免高版本 GLIBC 符号链接限制，并让 load-dynamic 在旧系统上顺利加载
+          # 下载官方的 ONNX Runtime 并配置为系统动态链接模式，避免编译期链接 pyke 静态库，同时设置 RPATH
           echo "📥 Downloading official ONNX Runtime v1.18.1 for Linux x64..."
-          mkdir -p libs
           curl -L -o /tmp/onnxruntime.tgz https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnxruntime-linux-x64-1.18.1.tgz
           tar -xzf /tmp/onnxruntime.tgz -C /tmp
-          cp /tmp/onnxruntime-linux-x64-1.18.1/lib/libonnxruntime.so.1.18.1 libs/libonnxruntime.so
-          rm -rf /tmp/onnxruntime*
+
+          export ORT_STRATEGY=system
+          export ORT_LIB_LOCATION=/tmp/onnxruntime-linux-x64-1.18.1
+          export RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN"
 
           # Build release binary
           echo "🔨 Starting cargo build --release ..."
           cargo build --release
           echo "✅ Build completed successfully!"
+
+          # 拷贝 libonnxruntime.so 到 release 输出文件夹，供打包步骤使用
+          mkdir -p target/release
+          cp /tmp/onnxruntime-linux-x64-1.18.1/lib/libonnxruntime.so.1.18.1 target/release/libonnxruntime.so
           BUILDSCRIPT
           chmod +x /tmp/docker-build.sh
 
@@ -127,6 +132,7 @@ jobs:
         run: |
           mkdir -p release-pkg
           cp target/release/ocr-rust release-pkg/
+          cp target/release/libonnxruntime.so release-pkg/
           cp README.md release-pkg/
           tar -czf ${{ matrix.archive_name }} -C release-pkg .
 

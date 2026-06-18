@@ -122,136 +122,32 @@ fn get_current_time_string() -> String {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod linux_support {
-    use std::fs::File;
-    use std::io::Write;
-    use std::path::{Path, PathBuf};
-
-    const SO_BYTES: &[u8] = include_bytes!("../libs/libonnxruntime.so");
-
-    // 获取安全的自解压目录，优先选择 $HOME/.ocr-rust/，其次是程序同级目录的 libs/，最后是 /tmp/
-    pub fn get_extract_dir() -> PathBuf {
-        if let Ok(home) = std::env::var("HOME") {
-            let path = Path::new(&home).join(".ocr-rust");
-            if std::fs::create_dir_all(&path).is_ok() {
-                return path;
-            }
-        }
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(parent) = exe_path.parent() {
-                let path = parent.join("libs");
-                if std::fs::create_dir_all(&path).is_ok() {
-                    return path;
-                }
-                return parent.to_path_buf();
-            }
-        }
-        PathBuf::from("/tmp")
-    }
-
-    pub fn extract_and_load_so() -> Result<(), Box<dyn std::error::Error>> {
-        let extract_dir = get_extract_dir();
-        let target_path = extract_dir.join("libonnxruntime_1_18_1.so");
-        
-        let needs_extract = if !target_path.exists() {
-            true
-        } else {
-            match target_path.metadata() {
-                Ok(meta) => meta.len() != SO_BYTES.len() as u64,
-                Err(_) => true,
-            }
-        };
-
-        if needs_extract {
-            let mut file = File::create(&target_path)?;
-            file.write_all(SO_BYTES)?;
-            file.flush()?;
-            
-            #[cfg(target_family = "unix")]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = target_path.metadata()?.permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&target_path, perms)?;
-            }
-        }
-        
-        std::env::set_var("ORT_DYLIB_PATH", target_path.to_string_lossy().to_string());
-        
-        if std::env::var("OMP_NUM_THREADS").is_err() {
-            std::env::set_var("OMP_NUM_THREADS", "1");
-        }
-        
-        Ok(())
-    }
-
-    pub fn get_embedded_model_path(name: &str, bytes: &[u8]) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let extract_dir = get_extract_dir();
-        let target_path = extract_dir.join(format!("ocr_model_{}.onnx", name));
-        
-        let needs_extract = if !target_path.exists() {
-            true
-        } else {
-            match target_path.metadata() {
-                Ok(meta) => meta.len() != bytes.len() as u64,
-                Err(_) => true,
-            }
-        };
-
-        if needs_extract {
-            let mut file = File::create(&target_path)?;
-            file.write_all(bytes)?;
-            file.flush()?;
-        }
-        
-        Ok(target_path)
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let show_info = args.info;
 
-    #[cfg(target_os = "linux")]
-    {
-        linux_support::extract_and_load_so()?;
+    // 自动推断并配置 ORT_DYLIB_PATH 环境变量以支持动态加载
+    if std::env::var("ORT_DYLIB_PATH").is_err() {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                #[cfg(target_os = "windows")]
+                let lib_name = "onnxruntime.dll";
+                #[cfg(target_os = "macos")]
+                let lib_name = "libonnxruntime.dylib";
+                #[cfg(target_os = "linux")]
+                let lib_name = "libonnxruntime.so";
 
-        // 显式初始化 Linux 下的 ONNX Runtime，排除懒加载死锁
-        let extract_dir = linux_support::get_extract_dir();
-        let so_path = extract_dir.join("libonnxruntime_1_18_1.so");
-        if show_info {
-            eprintln!("🔔 正在显式初始化 ONNX Runtime 全局环境: {:?}", so_path);
-        }
-        ort::init_from(&so_path)?;
-        if show_info {
-            eprintln!("✅ ONNX Runtime 全局环境初始化成功！");
-        }
-    }
-
-    // 自动推断并配置非 Linux 平台上的 ORT_DYLIB_PATH 环境变量以支持动态加载
-    #[cfg(not(target_os = "linux"))]
-    {
-        if std::env::var("ORT_DYLIB_PATH").is_err() {
-            if let Ok(exe_path) = std::env::current_exe() {
-                if let Some(exe_dir) = exe_path.parent() {
-                    #[cfg(target_os = "windows")]
-                    let lib_name = "onnxruntime.dll";
-                    #[cfg(target_os = "macos")]
-                    let lib_name = "libonnxruntime.dylib";
-
-                    #[cfg(any(target_os = "windows", target_os = "macos"))]
-                    {
-                        // 1. 尝试当前可执行文件同级目录
-                        let local_lib = exe_dir.join(lib_name);
-                        if local_lib.exists() {
-                            std::env::set_var("ORT_DYLIB_PATH", local_lib.to_string_lossy().to_string());
-                        } else {
-                            // 2. 尝试当前可执行文件目录下的 libs 子目录
-                            let libs_dir = exe_dir.join("libs").join(lib_name);
-                            if libs_dir.exists() {
-                                std::env::set_var("ORT_DYLIB_PATH", libs_dir.to_string_lossy().to_string());
-                            }
+                #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+                {
+                    // 1. 尝试当前可执行文件同级目录
+                    let local_lib = exe_dir.join(lib_name);
+                    if local_lib.exists() {
+                        std::env::set_var("ORT_DYLIB_PATH", local_lib.to_string_lossy().to_string());
+                    } else {
+                        // 2. 尝试当前可执行文件目录下的 libs 子目录
+                        let libs_dir = exe_dir.join("libs").join(lib_name);
+                        if libs_dir.exists() {
+                            std::env::set_var("ORT_DYLIB_PATH", libs_dir.to_string_lossy().to_string());
                         }
                     }
                 }
@@ -275,25 +171,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. 初始化 ONNX Runtime 环境并载入模型
     let start_load = std::time::Instant::now();
-    #[cfg(target_os = "linux")]
-    let mut det_session = {
-        let model_path = if let Some(ref path) = args.det_model {
-            resolve_path(path.clone())
-        } else {
-            if show_info {
-                eprintln!("🔔 正在载入内嵌默认文本检测模型 (PP-OCRv6 tiny)");
-            }
-            linux_support::get_embedded_model_path("det_v6", DEFAULT_DET_MODEL)?
-        };
-        if show_info && args.det_model.is_some() {
-            eprintln!("🔔 正在载入外部文本检测模型: {:?}", model_path);
-        }
-        Session::builder()?
-            .with_intra_threads(intra_threads)?
-            .commit_from_file(&model_path)?
-    };
-
-    #[cfg(not(target_os = "linux"))]
     let mut det_session = if let Some(ref path) = args.det_model {
         let resolved = resolve_path(path.clone());
         if show_info {
@@ -311,25 +188,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .commit_from_memory(DEFAULT_DET_MODEL)?
     };
 
-    #[cfg(target_os = "linux")]
-    let mut rec_session = {
-        let model_path = if let Some(ref path) = args.rec_model {
-            resolve_path(path.clone())
-        } else {
-            if show_info {
-                eprintln!("🔔 正在载入内嵌默认文本识别模型 (PP-OCRv6 tiny)");
-            }
-            linux_support::get_embedded_model_path("rec_v6", DEFAULT_REC_MODEL)?
-        };
-        if show_info && args.rec_model.is_some() {
-            eprintln!("🔔 正在载入外部文本识别模型: {:?}", model_path);
-        }
-        Session::builder()?
-            .with_intra_threads(intra_threads)?
-            .commit_from_file(&model_path)?
-    };
-
-    #[cfg(not(target_os = "linux"))]
     let mut rec_session = if let Some(ref path) = args.rec_model {
         let resolved = resolve_path(path.clone());
         if show_info {

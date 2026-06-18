@@ -1,6 +1,6 @@
 [package]
 name = "ocr-rust"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2021"
 description = "A pure Rust CLI for PaddleOCR using ONNX Runtime"
 
@@ -11,13 +11,9 @@ clap = { version = "4.4", features = ["derive"] }
 image = "0.24"
 # 多维矩阵与数值计算
 ndarray = "0.17"
+# ONNX Runtime 绑定
+ort = { version = "2.0.0-rc.12", features = ["copy-dylibs", "ndarray"] }
 # 纯 Rust 图像处理库，提供寻找轮廓 find_contours 功能
 imageproc = "0.23"
 # 基础数学/矩阵处理
 show-image = { version = "0.14", optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-ort = { version = "2.0.0-rc.12", features = ["load-dynamic", "ndarray"] }
-
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-ort = { version = "2.0.0-rc.12", features = ["copy-dylibs", "ndarray"] }
