@@ -27,6 +27,7 @@ struct Args {
 }
 
 fn resolve_path(path: PathBuf) -> PathBuf {
+    // 1. 尝试相对于当前工作目录解析并转为绝对路径
     if path.exists() {
         if let Ok(current_dir) = std::env::current_dir() {
             let abs_path = current_dir.join(&path);
@@ -34,18 +35,26 @@ fn resolve_path(path: PathBuf) -> PathBuf {
                 return abs_path;
             }
         }
-        path
-    } else {
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                let resolved = exe_dir.join(&path);
+        return path;
+    }
+
+    // 2. 尝试相对于可执行文件所在目录及其祖先目录级联解析
+    if let Ok(exe_path) = std::env::current_exe() {
+        let mut check_dir = exe_path.parent();
+        for _ in 0..3 {
+            if let Some(dir) = check_dir {
+                let resolved = dir.join(&path);
                 if resolved.exists() {
                     return resolved;
                 }
+                check_dir = dir.parent();
+            } else {
+                break;
             }
         }
-        path
     }
+
+    path
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
