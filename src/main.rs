@@ -131,7 +131,7 @@ mod linux_support {
     const SO_BYTES: &[u8] = include_bytes!("../libs/libonnxruntime.so");
 
     // 获取安全的自解压目录，优先选择 $HOME/.ocr-rust/，其次是程序同级目录的 libs/，最后是 /tmp/
-    fn get_extract_dir() -> PathBuf {
+    pub fn get_extract_dir() -> PathBuf {
         if let Ok(home) = std::env::var("HOME") {
             let path = Path::new(&home).join(".ocr-rust");
             if std::fs::create_dir_all(&path).is_ok() {
@@ -210,9 +210,23 @@ mod linux_support {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    let show_info = args.info;
+
     #[cfg(target_os = "linux")]
     {
         linux_support::extract_and_load_so()?;
+
+        // 显式初始化 Linux 下的 ONNX Runtime，排除懒加载死锁
+        let extract_dir = linux_support::get_extract_dir();
+        let so_path = extract_dir.join("libonnxruntime_1_18_1.so");
+        if show_info {
+            eprintln!("🔔 正在显式初始化 ONNX Runtime 全局环境: {:?}", so_path);
+        }
+        ort::init_from(&so_path)?;
+        if show_info {
+            eprintln!("✅ ONNX Runtime 全局环境初始化成功！");
+        }
     }
 
     // 自动推断并配置非 Linux 平台上的 ORT_DYLIB_PATH 环境变量以支持动态加载
@@ -247,9 +261,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use std::fs::OpenOptions;
     use std::io::Write;
-
-    let args = Args::parse();
-    let show_info = args.info;
 
     let format_arg = args.format.to_lowercase();
     if format_arg != "text" && format_arg != "json" {
