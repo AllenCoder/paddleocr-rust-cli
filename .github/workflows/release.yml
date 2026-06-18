@@ -36,17 +36,13 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # Linux 专用：安装 musl 工具链，实现 GLIBC-free 静态链接
-      - name: Install musl tools (Linux only)
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y musl-tools
-          rustup target add x86_64-unknown-linux-musl
-
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # 关键：在缓存键中加入 OS 信息，防止不同 OS 的 build-script 二进制互相污染
+          prefix-key: "v2-${{ matrix.os }}"
 
+      # ====== Windows 构建 ======
       - name: Build release binary (Windows)
         if: matrix.os == 'windows-latest'
         shell: bash
@@ -55,17 +51,28 @@ jobs:
         run: |
           cargo build --release
 
-      # Linux: 使用 musl target 编译，产物完全静态链接，不依赖任何 GLIBC 版本
-      - name: Build release binary (Linux - musl static)
+      # ====== Linux 构建：使用 cargo-zigbuild 限定最低 GLIBC 版本 ======
+      # zigbuild 用 zig 作为链接器，可精确控制目标 GLIBC 版本，兼容所有 Linux
+      - name: Install zig and cargo-zigbuild (Linux only)
         if: matrix.os == 'ubuntu-22.04'
         run: |
-          cargo build --release --target x86_64-unknown-linux-musl
+          pip3 install ziglang
+          cargo install cargo-zigbuild --locked
+          rustup target add x86_64-unknown-linux-gnu
 
+      - name: Build release binary (Linux - zigbuild for GLIBC 2.17 compat)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          # 目标 GLIBC 2.17 = CentOS 7 / Ubuntu 14.04 时代，几乎覆盖所有 Linux
+          cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17
+
+      # ====== macOS 构建 ======
       - name: Build release binary (macOS)
         if: matrix.os == 'macos-latest'
         run: |
           cargo build --release
 
+      # ====== 打包：Windows ======
       - name: Prepare Release Artifacts (Windows)
         if: matrix.os == 'windows-latest'
         shell: bash
@@ -77,17 +84,19 @@ jobs:
           cd release-pkg
           tar -a -c -f ../${{ matrix.archive_name }} *
 
-      # Linux: 从 musl target 目录拷贝产物
-      - name: Prepare Release Artifacts (Linux - musl static)
+      # ====== 打包：Linux (zigbuild 输出在 gnu target 目录下) ======
+      - name: Prepare Release Artifacts (Linux)
         if: matrix.os == 'ubuntu-22.04'
         shell: bash
         run: |
           mkdir -p release-pkg
-          cp target/x86_64-unknown-linux-musl/release/ocr-rust release-pkg/
-          # musl 静态链接无需拷贝 onnxruntime 动态库，模型已内嵌
+          cp target/x86_64-unknown-linux-gnu/release/ocr-rust release-pkg/
+          # ort 的 copy-dylibs 特性会把 libonnxruntime.so 复制到 target 目录
+          cp target/x86_64-unknown-linux-gnu/release/libonnxruntime* release-pkg/ 2>/dev/null || true
           cp README.md release-pkg/
           tar -czf ${{ matrix.archive_name }} -C release-pkg .
 
+      # ====== 打包：macOS ======
       - name: Prepare Release Artifacts (macOS)
         if: matrix.os == 'macos-latest'
         shell: bash
