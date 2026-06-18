@@ -1,10 +1,10 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use clap::Parser;
-use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, RgbImage};
-use ndarray::{s, Array, Array4, Axis};
-use ort::{inputs, Session};
+use image::{DynamicImage, GenericImageView, ImageBuffer, Luma};
+use ndarray::{s, Array, Array4};
+use ort::session::Session;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "PaddleOCR Rust Inference Tool (Offline)")]
@@ -14,16 +14,16 @@ struct Args {
     image: PathBuf,
 
     /// 文本检测检测模型 (inference.onnx) 路径
-    #[arg(short, long)]
+    #[arg(short, long, default_value = "models/PP-OCRv6_tiny_det_onnx_infer/inference.onnx")]
     det_model: PathBuf,
 
     /// 文本识别模型 (inference.onnx) 路径
-    #[arg(short, long)]
+    #[arg(short, long, default_value = "models/PP-OCRv6_tiny_rec_onnx_infer/inference.onnx")]
     rec_model: PathBuf,
 
-    /// 中文字典密钥文本路径 (例如 ppocr_keys_v1.txt)
-    #[arg(short, long)]
-    dict: Option<PathBuf>,
+    /// 中文字典密钥文本路径
+    #[arg(short, long, default_value = "models/dict.txt")]
+    dict: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,14 +31,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. 初始化 ONNX Runtime 环境并载入模型
     println!("🔔 正在载入文本检测模型: {:?}", args.det_model);
-    let det_session = Session::builder()?
-        .with_optimization_level(ort::GraphOptimizationLevel::Level3)?
+    let mut det_session = Session::builder()?
         .with_intra_threads(4)?
         .commit_from_file(&args.det_model)?;
 
     println!("🔔 正在载入文本识别模型: {:?}", args.rec_model);
-    let rec_session = Session::builder()?
-        .with_optimization_level(ort::GraphOptimizationLevel::Level3)?
+    let mut rec_session = Session::builder()?
         .with_intra_threads(4)?
         .commit_from_file(&args.rec_model)?;
 
@@ -52,8 +50,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (det_input, ratio_w, ratio_h) = preprocess_det(&img, det_size);
 
     // 4. 执行文本检测推理 (DBNet)
-    let det_outputs = det_session.run(inputs![det_input]?)?;
-    let det_output_tensor = det_outputs[0].try_extract_tensor::<f32>()?;
+    let det_input_value = ort::value::Value::from_array(det_input.clone())?;
+    let det_outputs = det_session.run(ort::inputs![det_input_value])?;
+    let det_output_tensor = det_outputs[0].try_extract_array::<f32>()?;
     
     // 获取概率图 shape: [1, 1, H, W]
     let prob_map = det_output_tensor.slice(s![0, 0, .., ..]);
@@ -112,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🎯 检测到 {} 个文本区域，开始执行识别...", boxes.len());
 
     // 6. 加载字典
-    let dict = load_dict(args.dict.as_ref())?;
+    let dict = load_dict(&args.dict)?;
 
     // 7. 遍历检测到的边框执行识别推理 (CRNN)
     for (i, &(bx, by, bw, bh)) in boxes.iter().enumerate() {
@@ -135,8 +134,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let rec_input = preprocess_rec(&cropped, rec_w, rec_h);
 
         // 运行文本识别模型
-        let rec_outputs = rec_session.run(inputs![rec_input]?)?;
-        let rec_tensor = rec_outputs[0].try_extract_tensor::<f32>()?;
+        let rec_input_value = ort::value::Value::from_array(rec_input.clone())?;
+        let rec_outputs = rec_session.run(ort::inputs![rec_input_value])?;
+        let rec_tensor = rec_outputs[0].try_extract_array::<f32>()?;
 
         // 8. CTC 解码得到识别文本
         let text = decode_ctc(&rec_tensor, &dict);
@@ -229,22 +229,13 @@ fn decode_ctc(tensor: &ndarray::ArrayViewD<f32>, dict: &[String]) -> String {
     result
 }
 
-/// 加载中文字典。若未传入路径，则默认提供内置的基础小字典以供最小化运行测试
-fn load_dict(path: Option<&PathBuf>) -> Result<Vec<String>, std::io::Error> {
-    if let Some(p) = path {
-        let file = File::open(p)?;
-        let reader = BufReader::new(file);
-        let mut dict = Vec::new();
-        for line in reader.lines() {
-            dict.push(line?);
-        }
-        Ok(dict)
-    } else {
-        // 内置默认常用字典备用
-        let mut default_dict = Vec::new();
-        for char in "0123456789abcdefghijklmnopqrstuvwxyzPaddleOCR离线测试中文支持".chars() {
-            default_dict.push(char.to_string());
-        }
-        Ok(default_dict)
+/// 加载中文字典
+fn load_dict(path: &PathBuf) -> Result<Vec<String>, std::io::Error> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut dict = Vec::new();
+    for line in reader.lines() {
+        dict.push(line?);
     }
+    Ok(dict)
 }
