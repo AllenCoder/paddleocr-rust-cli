@@ -244,7 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. 初始化 ONNX Runtime 环境并载入模型
     let start_load = std::time::Instant::now();
     #[cfg(target_os = "linux")]
-    let det_session = {
+    let mut det_session = {
         let model_path = if let Some(ref path) = args.det_model {
             resolve_path(path.clone())
         } else {
@@ -280,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     #[cfg(target_os = "linux")]
-    let rec_session = {
+    let mut rec_session = {
         let model_path = if let Some(ref path) = args.rec_model {
             resolve_path(path.clone())
         } else {
