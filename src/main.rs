@@ -122,34 +122,79 @@ fn get_current_time_string() -> String {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 自动推断并配置 ORT_DYLIB_PATH 环境变量以支持动态加载
-    if std::env::var("ORT_DYLIB_PATH").is_err() {
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                #[cfg(target_os = "windows")]
-                let lib_name = "onnxruntime.dll";
-                #[cfg(target_os = "macos")]
-                let lib_name = "libonnxruntime.dylib";
-                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                let lib_name = {
-                    if std::env::var("OMP_NUM_THREADS").is_err() {
-                        std::env::set_var("OMP_NUM_THREADS", "1");
-                    }
-                    "libonnxruntime.so"
-                };
+#[cfg(target_os = "linux")]
+mod linux_support {
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::Path;
 
-                #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "freebsd"))]
-                {
-                    // 1. 尝试当前可执行文件同级目录
-                    let local_lib = exe_dir.join(lib_name);
-                    if local_lib.exists() {
-                        std::env::set_var("ORT_DYLIB_PATH", local_lib.to_string_lossy().to_string());
-                    } else {
-                        // 2. 尝试当前可执行文件目录下的 libs 子目录
-                        let libs_dir = exe_dir.join("libs").join(lib_name);
-                        if libs_dir.exists() {
-                            std::env::set_var("ORT_DYLIB_PATH", libs_dir.to_string_lossy().to_string());
+    const SO_BYTES: &[u8] = include_bytes!("../libs/libonnxruntime.so");
+
+    pub fn extract_and_load_so() -> Result<(), Box<dyn std::error::Error>> {
+        let target_path = Path::new("/tmp/libonnxruntime_1_18_1.so");
+        
+        let needs_extract = if !target_path.exists() {
+            true
+        } else {
+            match target_path.metadata() {
+                Ok(meta) => meta.len() != SO_BYTES.len() as u64,
+                Err(_) => true,
+            }
+        };
+
+        if needs_extract {
+            let mut file = File::create(target_path)?;
+            file.write_all(SO_BYTES)?;
+            file.flush()?;
+            
+            #[cfg(target_family = "unix")]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = target_path.metadata()?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(target_path, perms)?;
+            }
+        }
+        
+        std::env::set_var("ORT_DYLIB_PATH", target_path.to_string_lossy().to_string());
+        
+        if std::env::var("OMP_NUM_THREADS").is_err() {
+            std::env::set_var("OMP_NUM_THREADS", "1");
+        }
+        
+        Ok(())
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_support::extract_and_load_so()?;
+    }
+
+    // 自动推断并配置非 Linux 平台上的 ORT_DYLIB_PATH 环境变量以支持动态加载
+    #[cfg(not(target_os = "linux"))]
+    {
+        if std::env::var("ORT_DYLIB_PATH").is_err() {
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    #[cfg(target_os = "windows")]
+                    let lib_name = "onnxruntime.dll";
+                    #[cfg(target_os = "macos")]
+                    let lib_name = "libonnxruntime.dylib";
+
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    {
+                        // 1. 尝试当前可执行文件同级目录
+                        let local_lib = exe_dir.join(lib_name);
+                        if local_lib.exists() {
+                            std::env::set_var("ORT_DYLIB_PATH", local_lib.to_string_lossy().to_string());
+                        } else {
+                            // 2. 尝试当前可执行文件目录下的 libs 子目录
+                            let libs_dir = exe_dir.join("libs").join(lib_name);
+                            if libs_dir.exists() {
+                                std::env::set_var("ORT_DYLIB_PATH", libs_dir.to_string_lossy().to_string());
+                            }
                         }
                     }
                 }
