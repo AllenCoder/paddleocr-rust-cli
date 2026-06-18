@@ -132,7 +132,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 #[cfg(target_os = "macos")]
                 let lib_name = "libonnxruntime.dylib";
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                let lib_name = "libonnxruntime.so";
+                let lib_name = {
+                    if std::env::var("OMP_NUM_THREADS").is_err() {
+                        std::env::set_var("OMP_NUM_THREADS", "1");
+                    }
+                    "libonnxruntime.so"
+                };
 
                 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "freebsd"))]
                 {
@@ -166,6 +171,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start_total = std::time::Instant::now();
 
+    // Linux 环境为防止 OpenMP 多线程死锁，默认将推理线程数限制为 1；Windows/macOS 保持 4 线程
+    let intra_threads = if cfg!(target_os = "linux") { 1 } else { 4 };
+
     // 1. 初始化 ONNX Runtime 环境并载入模型
     let start_load = std::time::Instant::now();
     let mut det_session = if let Some(ref path) = args.det_model {
@@ -174,14 +182,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("🔔 正在载入外部文本检测模型: {:?}", resolved);
         }
         Session::builder()?
-            .with_intra_threads(4)?
+            .with_intra_threads(intra_threads)?
             .commit_from_file(&resolved)?
     } else {
         if show_info {
             eprintln!("🔔 正在载入内嵌默认文本检测模型 (PP-OCRv6 tiny)");
         }
         Session::builder()?
-            .with_intra_threads(4)?
+            .with_intra_threads(intra_threads)?
             .commit_from_memory(DEFAULT_DET_MODEL)?
     };
 
@@ -191,14 +199,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("🔔 正在载入外部文本识别模型: {:?}", resolved);
         }
         Session::builder()?
-            .with_intra_threads(4)?
+            .with_intra_threads(intra_threads)?
             .commit_from_file(&resolved)?
     } else {
         if show_info {
             eprintln!("🔔 正在载入内嵌默认文本识别模型 (PP-OCRv6 tiny)");
         }
         Session::builder()?
-            .with_intra_threads(4)?
+            .with_intra_threads(intra_threads)?
             .commit_from_memory(DEFAULT_REC_MODEL)?
     };
     let load_duration = start_load.elapsed();
