@@ -119,7 +119,14 @@ jobs:
         run: |
           mkdir -p release-pkg
           cp target/release/ocr-rust release-pkg/
-          cp target/release/libonnxruntime* release-pkg/ 2>/dev/null || true
+          
+          # 下载官方的 ONNX Runtime 共享库以避免高版本 GLIBC 符号链接限制，并让 load-dynamic 在旧系统上顺利加载
+          echo "📥 Downloading official ONNX Runtime v1.18.1 for Linux x64..."
+          curl -L -o onnxruntime.tgz https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnxruntime-linux-x64-1.18.1.tgz
+          tar -xzf onnxruntime.tgz
+          # 拷贝真正的动态链接库，并重命名为 libonnxruntime.so
+          cp onnxruntime-linux-x64-1.18.1/lib/libonnxruntime.so.1.18.1 release-pkg/libonnxruntime.so
+          
           cp README.md release-pkg/
           tar -czf ${{ matrix.archive_name }} -C release-pkg .
 

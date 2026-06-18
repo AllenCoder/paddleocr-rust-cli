@@ -123,6 +123,35 @@ fn get_current_time_string() -> String {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 自动推断并配置 ORT_DYLIB_PATH 环境变量以支持动态加载
+    if std::env::var("ORT_DYLIB_PATH").is_err() {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                #[cfg(target_os = "windows")]
+                let lib_name = "onnxruntime.dll";
+                #[cfg(target_os = "macos")]
+                let lib_name = "libonnxruntime.dylib";
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                let lib_name = "libonnxruntime.so";
+
+                #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "freebsd"))]
+                {
+                    // 1. 尝试当前可执行文件同级目录
+                    let local_lib = exe_dir.join(lib_name);
+                    if local_lib.exists() {
+                        std::env::set_var("ORT_DYLIB_PATH", local_lib.to_string_lossy().to_string());
+                    } else {
+                        // 2. 尝试当前可执行文件目录下的 libs 子目录
+                        let libs_dir = exe_dir.join("libs").join(lib_name);
+                        if libs_dir.exists() {
+                            std::env::set_var("ORT_DYLIB_PATH", libs_dir.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     use std::fs::OpenOptions;
     use std::io::Write;
 
