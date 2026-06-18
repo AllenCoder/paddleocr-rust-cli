@@ -22,7 +22,7 @@ jobs:
           - os: windows-latest
             artifact_name: paddleocr-rust-cli-windows-amd64
             archive_name: paddleocr-rust-cli-windows-amd64.zip
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             artifact_name: paddleocr-rust-cli-linux-amd64
             archive_name: paddleocr-rust-cli-linux-amd64.tar.gz
           - os: macos-latest
