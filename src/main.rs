@@ -164,6 +164,28 @@ mod linux_support {
         
         Ok(())
     }
+
+    pub fn get_embedded_model_path(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        use std::path::PathBuf;
+        let target_path = PathBuf::from(format!("/tmp/ocr_model_{}.onnx", name));
+        
+        let needs_extract = if !target_path.exists() {
+            true
+        } else {
+            match target_path.metadata() {
+                Ok(meta) => meta.len() != bytes.len() as u64,
+                Err(_) => true,
+            }
+        };
+
+        if needs_extract {
+            let mut file = File::create(&target_path)?;
+            file.write_all(bytes)?;
+            file.flush()?;
+        }
+        
+        Ok(target_path)
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -221,6 +243,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. 初始化 ONNX Runtime 环境并载入模型
     let start_load = std::time::Instant::now();
+    #[cfg(target_os = "linux")]
+    let det_session = {
+        let model_path = if let Some(ref path) = args.det_model {
+            resolve_path(path.clone())
+        } else {
+            if show_info {
+                eprintln!("🔔 正在载入内嵌默认文本检测模型 (PP-OCRv6 tiny)");
+            }
+            linux_support::get_embedded_model_path("det_v6", DEFAULT_DET_MODEL)?
+        };
+        if show_info && args.det_model.is_some() {
+            eprintln!("🔔 正在载入外部文本检测模型: {:?}", model_path);
+        }
+        Session::builder()?
+            .with_intra_threads(intra_threads)?
+            .commit_from_file(&model_path)?
+    };
+
+    #[cfg(not(target_os = "linux"))]
     let mut det_session = if let Some(ref path) = args.det_model {
         let resolved = resolve_path(path.clone());
         if show_info {
@@ -238,6 +279,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .commit_from_memory(DEFAULT_DET_MODEL)?
     };
 
+    #[cfg(target_os = "linux")]
+    let rec_session = {
+        let model_path = if let Some(ref path) = args.rec_model {
+            resolve_path(path.clone())
+        } else {
+            if show_info {
+                eprintln!("🔔 正在载入内嵌默认文本识别模型 (PP-OCRv6 tiny)");
+            }
+            linux_support::get_embedded_model_path("rec_v6", DEFAULT_REC_MODEL)?
+        };
+        if show_info && args.rec_model.is_some() {
+            eprintln!("🔔 正在载入外部文本识别模型: {:?}", model_path);
+        }
+        Session::builder()?
+            .with_intra_threads(intra_threads)?
+            .commit_from_file(&model_path)?
+    };
+
+    #[cfg(not(target_os = "linux"))]
     let mut rec_session = if let Some(ref path) = args.rec_model {
         let resolved = resolve_path(path.clone());
         if show_info {
