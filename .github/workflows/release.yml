@@ -1,4 +1,4 @@
-name: Release Build
+name: Multi-Platform Release Build
 
 on:
   push:
@@ -11,9 +11,18 @@ on:
       - main
 
 jobs:
-  build-windows:
-    name: Build for Windows
-    runs-on: windows-latest
+  release:
+    name: Build Release for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: paddleocr-rust-cli-windows-amd64
+          - os: ubuntu-latest
+            artifact_name: paddleocr-rust-cli-linux-amd64
+          - os: macos-latest
+            artifact_name: paddleocr-rust-cli-macos-universal
 
     steps:
       - name: Checkout repository
@@ -25,14 +34,21 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
+      - name: Build release binary (Windows)
+        if: matrix.os == 'windows-latest'
         shell: bash
         env:
           ORT_DYLIB_PATH: ${{ github.workspace }}/libs/onnxruntime.dll
         run: |
           cargo build --release
 
-      - name: Prepare Release Artifacts
+      - name: Build release binary (Non-Windows)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cargo build --release
+
+      - name: Prepare Release Artifacts (Windows)
+        if: matrix.os == 'windows-latest'
         shell: bash
         run: |
           mkdir -p release-pkg
@@ -40,18 +56,32 @@ jobs:
           cp libs/onnxruntime.dll release-pkg/
           cp README.md release-pkg/
           cd release-pkg
-          tar -a -c -f ../paddleocr-rust-cli-windows-x64.zip *
+          tar -a -c -f ../${{ matrix.artifact_name }}.zip *
+
+      - name: Prepare Release Artifacts (Non-Windows)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p release-pkg
+          cp target/release/ocr-rust release-pkg/
+          cp target/release/libonnxruntime* release-pkg/ 2>/dev/null || true
+          cp README.md release-pkg/
+          tar -czf ${{ matrix.artifact_name }}.tar.gz -C release-pkg .
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: paddleocr-rust-cli-windows-x64
-          path: paddleocr-rust-cli-windows-x64.zip
+          name: ${{ matrix.artifact_name }}
+          path: |
+            *.zip
+            *.tar.gz
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: paddleocr-rust-cli-windows-x64.zip
+          files: |
+            *.zip
+            *.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
