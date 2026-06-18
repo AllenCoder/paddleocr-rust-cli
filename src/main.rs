@@ -28,6 +28,12 @@ struct Args {
 
 fn resolve_path(path: PathBuf) -> PathBuf {
     if path.exists() {
+        if let Ok(current_dir) = std::env::current_dir() {
+            let abs_path = current_dir.join(&path);
+            if abs_path.exists() {
+                return abs_path;
+            }
+        }
         path
     } else {
         if let Ok(exe_path) = std::env::current_exe() {
