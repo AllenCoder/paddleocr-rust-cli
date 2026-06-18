@@ -25,10 +25,22 @@ struct Args {
     rec_model: Option<PathBuf>,
 
     /// 中文字典文本路径 [可选，缺省则使用内嵌中文字典]
-    #[arg(short, long)]
+    #[arg(long)]
     dict: Option<PathBuf>,
 
-    /// 是否输出详细性能耗时分析与步骤辅助信息
+    /// 将 OCR 完整结果 (JSON) 保存到指定的本地文件中
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// 追加记录耗时与识别概况的日志文件路径 [可选，默认在当前目录下追加记录到 ocr.log]
+    #[arg(short, long)]
+    log: Option<PathBuf>,
+
+    /// 控制台输出格式：text (人类友好简明列表，超长折叠) 或 json (完整 JSON 数据)
+    #[arg(short, long, default_value = "text")]
+    format: String,
+
+    /// 是否输出详细性能耗时分析与步骤辅助信息到 stderr
     #[arg(short, long)]
     info: bool,
 }
@@ -64,9 +76,64 @@ fn resolve_path(path: PathBuf) -> PathBuf {
     path
 }
 
+fn get_current_time_string() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    if let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) {
+        let secs = duration.as_secs();
+        // 简单的 Unix 时间戳转东八区北京时间 (YYYY-MM-DD HH:MM:SS)
+        let seconds_in_day = 86400;
+        let days = secs / seconds_in_day;
+        let seconds_of_day = secs % seconds_in_day;
+
+        let hour = (seconds_of_day / 3600 + 8) % 24; // 转换到 UTC+8
+        let minute = (seconds_of_day % 3600) / 60;
+        let second = seconds_of_day % 60;
+
+        let mut year = 1970;
+        let mut day_of_year = days;
+
+        loop {
+            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            let days_in_year = if is_leap { 366 } else { 365 };
+            if day_of_year >= days_in_year {
+                day_of_year -= days_in_year;
+                year += 1;
+            } else {
+                break;
+            }
+        }
+
+        let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        let month_days = [31, if is_leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let mut month = 1;
+        for &d in &month_days {
+            if day_of_year >= d as u64 {
+                day_of_year -= d as u64;
+                month += 1;
+            } else {
+                break;
+            }
+        }
+        let day = day_of_year + 1;
+
+        format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second)
+    } else {
+        "Unknown Time".to_string()
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
     let args = Args::parse();
     let show_info = args.info;
+
+    let format_arg = args.format.to_lowercase();
+    if format_arg != "text" && format_arg != "json" {
+        eprintln!("❌ 错误: --format 参数仅支持 \"text\" 或 \"json\"");
+        std::process::exit(1);
+    }
 
     let start_total = std::time::Instant::now();
 
@@ -75,14 +142,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut det_session = if let Some(ref path) = args.det_model {
         let resolved = resolve_path(path.clone());
         if show_info {
-            println!("🔔 正在载入外部文本检测模型: {:?}", resolved);
+            eprintln!("🔔 正在载入外部文本检测模型: {:?}", resolved);
         }
         Session::builder()?
             .with_intra_threads(4)?
             .commit_from_file(&resolved)?
     } else {
         if show_info {
-            println!("🔔 正在载入内嵌默认文本检测模型 (PP-OCRv6 tiny)");
+            eprintln!("🔔 正在载入内嵌默认文本检测模型 (PP-OCRv6 tiny)");
         }
         Session::builder()?
             .with_intra_threads(4)?
@@ -92,14 +159,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rec_session = if let Some(ref path) = args.rec_model {
         let resolved = resolve_path(path.clone());
         if show_info {
-            println!("🔔 正在载入外部文本识别模型: {:?}", resolved);
+            eprintln!("🔔 正在载入外部文本识别模型: {:?}", resolved);
         }
         Session::builder()?
             .with_intra_threads(4)?
             .commit_from_file(&resolved)?
     } else {
         if show_info {
-            println!("🔔 正在载入内嵌默认文本识别模型 (PP-OCRv6 tiny)");
+            eprintln!("🔔 正在载入内嵌默认文本识别模型 (PP-OCRv6 tiny)");
         }
         Session::builder()?
             .with_intra_threads(4)?
@@ -110,7 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. 加载图片与预处理
     let start_preprocess = std::time::Instant::now();
     if show_info {
-        println!("📸 正在读取图片: {:?}", args.image);
+        eprintln!("📸 正在读取图片: {:?}", args.image);
     }
     let img = image::open(&args.image)?;
     let (orig_w, orig_h) = img.dimensions();
@@ -129,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 5. 检测后处理：二值化并提取文本区域轮廓
     if show_info {
-        println!("🔍 正在提取文本区域...");
+        eprintln!("🔍 正在提取文本区域...");
     }
     let mut binary_img: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::new(det_size, det_size);
     for y in 0..det_size {
@@ -171,19 +238,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let det_duration = start_det.elapsed();
 
     if show_info {
-        println!("🎯 检测到 {} 个文本区域，开始执行识别...", boxes.len());
+        eprintln!("🎯 检测到 {} 个文本区域，开始执行识别...", boxes.len());
     }
 
     // 6. 加载字典
     let dict = if let Some(ref path) = args.dict {
         let resolved = resolve_path(path.clone());
         if show_info {
-            println!("🔔 正在载入外部字典: {:?}", resolved);
+            eprintln!("🔔 正在载入外部字典: {:?}", resolved);
         }
         load_dict(&resolved)?
     } else {
         if show_info {
-            println!("🔔 正在载入内嵌默认中文字典");
+            eprintln!("🔔 正在载入内嵌默认中文字典");
         }
         DEFAULT_DICT.lines().map(|line| line.to_string()).collect()
     };
@@ -213,39 +280,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 8. CTC 解码得到识别文本
         let text = decode_ctc(&rec_tensor, &dict);
         if show_info {
-            println!("  👉 [框 {}] 坐标:({},{},{},{}) -> 识别结果: \"{}\"", i + 1, bx, by, bw, bh, text);
+            eprintln!("  👉 [框 {}] 坐标:({},{},{},{}) -> 识别结果: \"{}\"", i + 1, bx, by, bw, bh, text);
         }
         results.push((bx, by, bw, bh, text));
     }
     let rec_duration = start_rec.elapsed();
     let total_duration = start_total.elapsed();
 
-    // 8. 输出结果
-    if show_info {
-        println!("\n⏱️ 详细性能分析与统计 (Verbose Metrics):");
-        println!("  ⚡ 引擎载入与模型初始化: {:?}", load_duration);
-        println!("  ⚡ 图像解码与预处理: {:?}", preprocess_duration);
-        println!("  ⚡ 文本区域检测 (DBNet): {:?}", det_duration);
-        println!("  ⚡ 文本片段识别 (CRNN): {:?}", rec_duration);
-        println!("  ⏱️ 整体推理耗时: {:?}", total_duration);
-        println!("  🎯 提取文本块总计: {} 个", results.len());
-        println!("\n🔍 输出识别结果 (JSON):");
-    }
-
+    // 8. 构造完整 JSON 结果 (包含性能指标和识别内容)
     let mut json_items = Vec::new();
     for &(bx, by, bw, bh, ref text) in &results {
         let escaped_text = text.replace('\\', "\\\\").replace('\"', "\\\"");
         json_items.push(format!(
-            "  {{\n    \"box\": [{}, {}, {}, {}],\n    \"text\": \"{}\"\n  }}",
+            "    {{\n      \"box\": [{}, {}, {}, {}],\n      \"text\": \"{}\"\n    }}",
             bx, by, bw, bh, escaped_text
         ));
     }
-    let json_str = format!("[\n{}\n]", json_items.join(",\n"));
-    println!("{}", json_str);
+    let results_json = json_items.join(",\n");
+    let json_str = format!(
+        "{{\n  \"metrics\": {{\n    \"load_model_ms\": {:.2},\n    \"preprocess_ms\": {:.2},\n    \"det_inference_ms\": {:.2},\n    \"rec_inference_ms\": {:.2},\n    \"total_ms\": {:.2}\n  }},\n  \"results\": [\n{}\n  ]\n}}",
+        load_duration.as_secs_f64() * 1000.0,
+        preprocess_duration.as_secs_f64() * 1000.0,
+        det_duration.as_secs_f64() * 1000.0,
+        rec_duration.as_secs_f64() * 1000.0,
+        total_duration.as_secs_f64() * 1000.0,
+        results_json
+    );
 
-    if show_info {
-        println!("✨ OCR 任务处理完成！");
+    // 9. 处理输出逻辑
+    if let Some(ref out_path) = args.output {
+        // 保存 JSON 到本地文件
+        let mut file = File::create(out_path)?;
+        file.write_all(json_str.as_bytes())?;
+        
+        // 在终端打印清爽的成功摘要，不刷屏
+        println!("✨ OCR 任务处理完成！已成功识别 {} 个文本区域，结果已保存至 \"{}\" (总耗时: {:.2}ms)", 
+            results.len(), 
+            out_path.display(),
+            total_duration.as_secs_f64() * 1000.0
+        );
+    } else {
+        // 如果没有指定输出文件，根据 format 输出
+        if format_arg == "json" {
+            println!("{}", json_str);
+        } else {
+            // text 格式：如果结果很多则折叠防刷屏
+            let max_display = 20;
+            if results.len() <= max_display {
+                for (i, &(bx, by, bw, bh, ref text)) in results.iter().enumerate() {
+                    println!("[{:02}] (x:{}, y:{}, w:{}, h:{}) -> \"{}\"", i + 1, bx, by, bw, bh, text);
+                }
+            } else {
+                for (i, &(bx, by, bw, bh, ref text)) in results.iter().take(10).enumerate() {
+                    println!("[{:02}] (x:{}, y:{}, w:{}, h:{}) -> \"{}\"", i + 1, bx, by, bw, bh, text);
+                }
+                println!("... (已省略中间 {} 个文本区域，您可以使用 -o/--output <FILE> 保存完整 JSON 结果) ...", results.len() - 20);
+                for (i, &(bx, by, bw, bh, ref text)) in results.iter().skip(results.len() - 10).enumerate() {
+                    println!("[{:02}] (x:{}, y:{}, w:{}, h:{}) -> \"{}\"", results.len() - 10 + i + 1, bx, by, bw, bh, text);
+                }
+            }
+        }
     }
+
+    // 10. 追加记录性能指标到日志文件
+    let log_path = args.log.clone().unwrap_or_else(|| PathBuf::from("ocr.log"));
+    if let Ok(mut log_file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let time_str = get_current_time_string();
+        let log_line = format!(
+            "[{}] Image: {:?} | Regions: {} | Load: {:.2}ms | Preprocess: {:.2}ms | Det: {:.2}ms | Rec: {:.2}ms | Total: {:.2}ms\n",
+            time_str,
+            args.image,
+            results.len(),
+            load_duration.as_secs_f64() * 1000.0,
+            preprocess_duration.as_secs_f64() * 1000.0,
+            det_duration.as_secs_f64() * 1000.0,
+            rec_duration.as_secs_f64() * 1000.0,
+            total_duration.as_secs_f64() * 1000.0,
+        );
+        let _ = log_file.write_all(log_line.as_bytes());
+    }
+
     Ok(())
 }
 
