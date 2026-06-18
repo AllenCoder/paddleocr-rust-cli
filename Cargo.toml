@@ -1,0 +1,21 @@
+[package]
+name = "ocr-rust"
+version = "0.1.0"
+edition = "2021"
+description = "A pure Rust CLI for PaddleOCR using ONNX Runtime"
+
+[dependencies]
+# 命令行参数解析
+clap = { version = "4.4", features = ["derive"] }
+# 图像解码与操作
+image = "0.24"
+# 多维矩阵与数值计算
+ndarray = "0.15"
+# ONNX Runtime 绑定
+ort = { version = "1.16", features = ["copy-dylibs"] }
+# 用于 DB 边框后处理的多边形计算
+clipper-sys = "0.2"
+# 纯 Rust 图像处理库，提供寻找轮廓 find_contours 功能
+imageproc = "0.23"
+# 基础数学/矩阵处理
+show-image = { version = "0.14", optional = true }
