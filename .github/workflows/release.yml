@@ -33,14 +33,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Windows / macOS: 正常安装 Rust 工具链
       - name: Set up Rust toolchain
+        if: matrix.os != 'ubuntu-22.04'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust Cache
+        if: matrix.os != 'ubuntu-22.04'
         uses: Swatinem/rust-cache@v2
         with:
-          # 关键：在缓存键中加入 OS 信息，防止不同 OS 的 build-script 二进制互相污染
-          prefix-key: "v2-${{ matrix.os }}"
+          prefix-key: "v3-${{ matrix.os }}"
 
       # ====== Windows 构建 ======
       - name: Build release binary (Windows)
@@ -48,29 +50,55 @@ jobs:
         shell: bash
         env:
           ORT_DYLIB_PATH: libs/onnxruntime.dll
+        run: cargo build --release
+
+      # ====== Linux 构建：Docker ubuntu:20.04 容器内编译 ======
+      # 核心原理：在 GLIBC 2.31 (Ubuntu 20.04) 上编译，产物天然兼容所有 GLIBC >= 2.31 的 Linux
+      # 同时解决了 libstdc++ (GLIBCXX) 版本兼容性问题
+      - name: Create Docker build script (Linux)
+        if: matrix.os == 'ubuntu-22.04'
         run: |
+          cat > /tmp/docker-build.sh << 'BUILDSCRIPT'
+          #!/bin/bash
+          set -eo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          # Ubuntu 20.04 repos fallback to old-releases mirror if needed
+          apt-get update -q 2>/dev/null || {
+            sed -i 's|http://archive.ubuntu.com|http://old-releases.ubuntu.com|g' /etc/apt/sources.list
+            sed -i 's|http://security.ubuntu.com|http://old-releases.ubuntu.com|g' /etc/apt/sources.list
+            apt-get update -q
+          }
+
+          apt-get install -y -q curl build-essential pkg-config libssl-dev ca-certificates
+
+          # Install Rust stable toolchain
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          . "$HOME/.cargo/env"
+
+          # Build release binary
+          echo "🔨 Starting cargo build --release ..."
           cargo build --release
+          echo "✅ Build completed successfully!"
+          BUILDSCRIPT
+          chmod +x /tmp/docker-build.sh
 
-      # ====== Linux 构建：使用 cargo-zigbuild 限定最低 GLIBC 版本 ======
-      # zigbuild 用 zig 作为链接器，可精确控制目标 GLIBC 版本，兼容所有 Linux
-      - name: Install zig and cargo-zigbuild (Linux only)
+      - name: Build release binary (Linux via Docker ubuntu 20.04)
         if: matrix.os == 'ubuntu-22.04'
         run: |
-          pip3 install ziglang
-          cargo install cargo-zigbuild --locked
-          rustup target add x86_64-unknown-linux-gnu
-
-      - name: Build release binary (Linux - zigbuild for GLIBC 2.17 compat)
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          # 目标 GLIBC 2.17 = CentOS 7 / Ubuntu 14.04 时代，几乎覆盖所有 Linux
-          cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -v "/tmp/docker-build.sh:/docker-build.sh:ro" \
+            -w /workspace \
+            ubuntu:20.04 \
+            bash /docker-build.sh
+          # Fix file ownership: Docker runs as root, runner user needs access
+          sudo chown -R "$(id -u):$(id -g)" target/
 
       # ====== macOS 构建 ======
       - name: Build release binary (macOS)
         if: matrix.os == 'macos-latest'
-        run: |
-          cargo build --release
+        run: cargo build --release
 
       # ====== 打包：Windows ======
       - name: Prepare Release Artifacts (Windows)
@@ -84,15 +112,14 @@ jobs:
           cd release-pkg
           tar -a -c -f ../${{ matrix.archive_name }} *
 
-      # ====== 打包：Linux (zigbuild 输出在 gnu target 目录下) ======
+      # ====== 打包：Linux ======
       - name: Prepare Release Artifacts (Linux)
         if: matrix.os == 'ubuntu-22.04'
         shell: bash
         run: |
           mkdir -p release-pkg
-          cp target/x86_64-unknown-linux-gnu/release/ocr-rust release-pkg/
-          # ort 的 copy-dylibs 特性会把 libonnxruntime.so 复制到 target 目录
-          cp target/x86_64-unknown-linux-gnu/release/libonnxruntime* release-pkg/ 2>/dev/null || true
+          cp target/release/ocr-rust release-pkg/
+          cp target/release/libonnxruntime* release-pkg/ 2>/dev/null || true
           cp README.md release-pkg/
           tar -czf ${{ matrix.archive_name }} -C release-pkg .
 
