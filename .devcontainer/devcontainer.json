@@ -7,6 +7,10 @@
 			"profile": "default"
 		}
 	},
+	"containerEnv": {
+		"ORT_STRATEGY": "system",
+		"ORT_LIB_LOCATION": "/usr"
+	},
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -16,5 +20,5 @@
 			]
 		}
 	},
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev && rustc --version"
+	"postCreateCommand": "bash .devcontainer/install-dependencies.sh"
 }
