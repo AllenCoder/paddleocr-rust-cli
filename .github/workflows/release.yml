@@ -170,3 +170,33 @@ jobs:
           files: ${{ matrix.archive_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  smoke-test-linux-artifact:
+    name: Smoke Test Linux Artifact
+    runs-on: ubuntu-22.04
+    needs: release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: paddleocr-rust-cli-linux-amd64
+          path: smoke-artifact
+
+      - name: Extract and validate Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf smoke-artifact/paddleocr-rust-cli-linux-amd64.tar.gz -C smoke-artifact
+          ls -lah smoke-artifact
+          test -x smoke-artifact/ocr-rust
+          test -f smoke-artifact/libonnxruntime.so.1
+          ./smoke-artifact/ocr-rust --help >/dev/null
+
+          # Run a minimal end-to-end OCR smoke test when sample image is available.
+          if [[ -f test.jpg ]]; then
+            ./smoke-artifact/ocr-rust ./test.jpg > smoke-artifact/smoke-output.txt
+            test -s smoke-artifact/smoke-output.txt
+          fi
