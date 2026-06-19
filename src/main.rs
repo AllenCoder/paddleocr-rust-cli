@@ -122,9 +122,41 @@ fn get_current_time_string() -> String {
     }
 }
 
+fn configure_linux_runtime() {
+    #[cfg(target_os = "linux")]
+    {
+        for (key, value) in [
+            ("OMP_NUM_THREADS", "1"),
+            ("KMP_NUM_THREADS", "1"),
+            ("GOMP_NUM_THREADS", "1"),
+            ("OMP_WAIT_POLICY", "PASSIVE"),
+        ] {
+            if std::env::var_os(key).is_none() {
+                std::env::set_var(key, value);
+            }
+        }
+    }
+}
+
+fn build_session_builder() -> ort::Result<ort::session::builder::SessionBuilder> {
+    let intra_threads = if cfg!(target_os = "linux") { 1 } else { 4 };
+
+    let builder = Session::builder()?.with_intra_threads(intra_threads)?;
+
+    #[cfg(target_os = "linux")]
+    let builder = builder
+        .with_parallel_execution(false)?
+        .with_inter_threads(1)?
+        .with_intra_op_spinning(false)?
+        .with_inter_op_spinning(false)?;
+
+    Ok(builder)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let show_info = args.info;
+    configure_linux_runtime();
 
     // 自动推断并配置 ORT_DYLIB_PATH 环境变量以支持动态加载
     if std::env::var("ORT_DYLIB_PATH").is_err() {
@@ -166,9 +198,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start_total = std::time::Instant::now();
 
-    // Linux 环境为防止 OpenMP 多线程死锁，默认将推理线程数限制为 1；Windows/macOS 保持 4 线程
-    let intra_threads = if cfg!(target_os = "linux") { 1 } else { 4 };
-
     // 1. 初始化 ONNX Runtime 环境并载入模型
     let start_load = std::time::Instant::now();
     let mut det_session = if let Some(ref path) = args.det_model {
@@ -176,16 +205,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if show_info {
             eprintln!("🔔 正在载入外部文本检测模型: {:?}", resolved);
         }
-        Session::builder()?
-            .with_intra_threads(intra_threads)?
-            .commit_from_file(&resolved)?
+        build_session_builder()?.commit_from_file(&resolved)?
     } else {
         if show_info {
             eprintln!("🔔 正在载入内嵌默认文本检测模型 (PP-OCRv6 tiny)");
         }
-        Session::builder()?
-            .with_intra_threads(intra_threads)?
-            .commit_from_memory(DEFAULT_DET_MODEL)?
+        build_session_builder()?.commit_from_memory(DEFAULT_DET_MODEL)?
     };
 
     let mut rec_session = if let Some(ref path) = args.rec_model {
@@ -193,16 +218,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if show_info {
             eprintln!("🔔 正在载入外部文本识别模型: {:?}", resolved);
         }
-        Session::builder()?
-            .with_intra_threads(intra_threads)?
-            .commit_from_file(&resolved)?
+        build_session_builder()?.commit_from_file(&resolved)?
     } else {
         if show_info {
             eprintln!("🔔 正在载入内嵌默认文本识别模型 (PP-OCRv6 tiny)");
         }
-        Session::builder()?
-            .with_intra_threads(intra_threads)?
-            .commit_from_memory(DEFAULT_REC_MODEL)?
+        build_session_builder()?.commit_from_memory(DEFAULT_REC_MODEL)?
     };
     let load_duration = start_load.elapsed();
 
