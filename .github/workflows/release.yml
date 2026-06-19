@@ -96,6 +96,13 @@ jobs:
           # 保留官方 so 文件名与符号链接，保证运行时依赖可以被正确解析
           mkdir -p target/release
           cp -P ${ORT_DIR}/lib/libonnxruntime.so* target/release/
+
+          # CI 强校验：确保二进制会优先从自身目录加载打包的 ONNX Runtime，并且可直接启动
+          echo "🔎 Validating Linux runtime linkage..."
+          readelf -d target/release/ocr-rust | grep -E 'RPATH|RUNPATH' | grep -q '\$ORIGIN'
+          ldd target/release/ocr-rust | grep -q 'libonnxruntime.so.1 => .*target/release/libonnxruntime.so.1'
+          ./target/release/ocr-rust --help >/dev/null
+          echo "✅ Runtime linkage validation passed"
           BUILDSCRIPT
           chmod +x /tmp/docker-build.sh
 
