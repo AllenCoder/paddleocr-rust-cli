@@ -76,12 +76,15 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           . "$HOME/.cargo/env"
 
+          ORT_VERSION=1.24.2
+          ORT_DIR=/tmp/onnxruntime-linux-x64-${ORT_VERSION}
+
           # 下载官方的 ONNX Runtime 并使用系统动态链接模式，同时设置 RPATH
-          echo "📥 Downloading official ONNX Runtime v1.24.2 for Linux x64..."
-          curl -L -o /tmp/onnxruntime.tgz https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-linux-x64-1.24.2.tgz
+          echo "📥 Downloading official ONNX Runtime v${ORT_VERSION} for Linux x64..."
+          curl -L -o /tmp/onnxruntime.tgz https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz
           tar -xzf /tmp/onnxruntime.tgz -C /tmp
 
-          export ORT_LIB_LOCATION=/tmp/onnxruntime-linux-x64-1.24.2/lib
+          export ORT_LIB_LOCATION=${ORT_DIR}/lib
           export ORT_PREFER_DYNAMIC_LINK=1
           export RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN"
 
@@ -92,7 +95,7 @@ jobs:
 
           # 保留官方 so 文件名与符号链接，保证运行时依赖可以被正确解析
           mkdir -p target/release
-          cp -P /tmp/onnxruntime-linux-x64-1.24.2/lib/libonnxruntime.so* target/release/
+          cp -P ${ORT_DIR}/lib/libonnxruntime.so* target/release/
           BUILDSCRIPT
           chmod +x /tmp/docker-build.sh
 
