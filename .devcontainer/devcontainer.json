@@ -9,7 +9,8 @@
 	},
 	"containerEnv": {
 		"ORT_STRATEGY": "system",
-		"ORT_LIB_LOCATION": "/usr"
+		"ORT_LIB_LOCATION": "/usr/lib",
+		"ORT_PREFER_DYNAMIC_LINK": "1"
 	},
 	"customizations": {
 		"vscode": {
